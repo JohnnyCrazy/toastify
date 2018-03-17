@@ -6,11 +6,13 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Linq;
+using System.Management;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
 using Toastify.Events;
@@ -46,6 +48,15 @@ namespace Toastify.Core
         #endregion Singleton
 
         #region Private fields
+
+        #region Spotify Watcher
+
+        private const string watchQuery = @"SELECT * FROM Win32_ProcessStartTrace " +
+                                          @"WHERE ProcessName = ""Spotify.exe""";
+
+        private ManagementEventWatcher spotifyWatcher;
+
+        #endregion Spotify Watcher
 
         #region Spotify Launcher
 
@@ -168,6 +179,52 @@ namespace Toastify.Core
             this.spotifyLauncherTimeoutTimer.Start();
         }
 
+        public void WaitForSpotify()
+        {
+            logger.Info("Waiting for Spotify to be launched...");
+
+            this.spotifyWatcher = new ManagementEventWatcher(new WqlEventQuery(watchQuery));
+            this.spotifyWatcher.EventArrived -= this.SpotifyWatcher_EventArrived;
+            this.spotifyWatcher.EventArrived += this.SpotifyWatcher_EventArrived;
+            this.spotifyWatcher.Start();
+        }
+
+        #region Spotify watcher
+
+        private async void SpotifyWatcher_EventArrived(object sender, EventArrivedEventArgs e)
+        {
+            uint pid = (uint)e.NewEvent.Properties["ProcessID"].Value;
+            var process = Process.GetProcessById(unchecked((int)pid));
+
+            if (logger.IsDebugEnabled)
+                logger.Debug($"Win32_ProcessStartTrace event arrived. ProcessID = {pid}");
+
+            try
+            {
+                process.WaitForInputIdle();
+                await Task.Run(() =>
+                {
+                    while (this.spotifyProcess == null)
+                    {
+                        if (IsMainSpotifyProcess(pid))
+                        {
+                            logger.Info($"Spotify launched; PID = {pid}");
+                            this.spotifyProcess = process;
+                            this.StartSpotify();
+
+                            this.spotifyWatcher.EventArrived -= this.SpotifyWatcher_EventArrived;
+                            this.spotifyWatcher.Stop();
+                        }
+                        else
+                            Thread.Sleep(500);
+                    }
+                });
+            }
+            catch (InvalidOperationException) { /* The process does not have a message loop */ }
+        }
+
+        #endregion Spotify watcher
+
         #region Spotify Launcher background worker
 
         private void SpotifyLauncherTimeoutTimer_Elapsed(object sender, System.Timers.ElapsedEventArgs e)
@@ -177,7 +234,9 @@ namespace Toastify.Core
 
         private void StartSpotify_WorkerTask(object sender, DoWorkEventArgs e)
         {
-            this.spotifyProcess = !this.IsRunning ? this.LaunchSpotifyAndWaitForInputIdle(e) : FindSpotifyProcess();
+            if (this.spotifyProcess == null)
+                this.spotifyProcess = !this.IsRunning ? this.LaunchSpotifyAndWaitForInputIdle(e) : FindSpotifyProcess();
+
             if (e.Cancel)
                 return;
             if (this.spotifyProcess == null)
@@ -197,7 +256,7 @@ namespace Toastify.Core
                 {
                     if (e.Error is ApplicationStartupException applicationStartupException)
                     {
-                        logger.Error("Error while starting Spotify.", applicationStartupException);
+                        logger.Error("Error while starting or connecting to Spotify.", applicationStartupException);
 
                         string errorMsg = Properties.Resources.ERROR_STARTUP_SPOTIFY;
                         MessageBox.Show($"{errorMsg}\n{applicationStartupException.Message}", "Toastify", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -206,7 +265,7 @@ namespace Toastify.Core
                     }
                     else if (e.Error is WebException webException)
                     {
-                        logger.Error("Web exception while starting Spotify.", webException);
+                        logger.Error("Web exception while starting or connecting to Spotify.", webException);
 
                         string errorMsg = Properties.Resources.ERROR_STARTUP_RESTART;
                         string status = $"{webException.Status}";
@@ -219,7 +278,7 @@ namespace Toastify.Core
                     }
                     else
                     {
-                        logger.Error("Unknown error while starting Spotify.", e.Error);
+                        logger.Error("Unknown error while starting or connecting to Spotify.", e.Error);
 
                         string errorMsg = Properties.Resources.ERROR_UNKNOWN;
                         string techDetails = $"Technical Details: {e.Error.Message}\n{e.Error.StackTrace}";
@@ -230,7 +289,7 @@ namespace Toastify.Core
                 }
                 else // e.Cancelled
                 {
-                    logger.Error("Toastify was not able to find Spotify within the timeout interval.");
+                    logger.Error("Toastify was not able to find or connect to Spotify within the timeout interval.");
 
                     string errorMsg = Properties.Resources.ERROR_STARTUP_SPOTIFY;
                     const string techDetails = "Technical Details: timeout";
@@ -382,9 +441,7 @@ namespace Toastify.Core
             {
                 foreach (var p in spotifyProcesses)
                 {
-                    var processWindows = Win32API.GetProcessWindows((uint)p.Id);
-                    IntPtr hWnd = processWindows.FirstOrDefault(h => spotifyMainWindowNames.Contains(Win32API.GetClassName(h)));
-                    if (hWnd != IntPtr.Zero)
+                    if (IsMainSpotifyProcess((uint)p.Id))
                         return p;
                 }
             }
@@ -617,6 +674,13 @@ namespace Toastify.Core
                 Win32API.SendMediaKey(action);
         }
 
+        public static bool IsMainSpotifyProcess(uint pid)
+        {
+            var windows = Win32API.GetProcessWindows(pid);
+            IntPtr hWnd = windows.FirstOrDefault(h => spotifyMainWindowNames.Contains(Win32API.GetClassName(h)));
+            return hWnd != IntPtr.Zero;
+        }
+
         private static string GetSpotifyPath()
         {
             string path = null;
@@ -648,6 +712,7 @@ namespace Toastify.Core
             this.DisposeLocalAPI();
             this.DisposeSpotifyLauncher();
             this.DisposeSpotifyLauncherTimeoutTimer();
+            this.DisposeSpotifyWatcher();
         }
 
         private void DisposeLocalAPI()
@@ -691,17 +756,45 @@ namespace Toastify.Core
             }
         }
 
+        private void DisposeSpotifyWatcher()
+        {
+            try
+            {
+                if (this.spotifyWatcher != null)
+                {
+                    this.spotifyWatcher.EventArrived -= this.SpotifyWatcher_EventArrived;
+                    this.spotifyWatcher.Stop();
+
+                    this.spotifyWatcher.Dispose();
+                    this.spotifyWatcher = null;
+                }
+            }
+            catch { /* ignore */ }
+        }
+
         #endregion Dispose
 
         #region Event handlers
 
         private void Spotify_Exited(object sender, EventArgs e)
         {
+            Settings.Current.DeactivateHotkeys();
+
+            try
+            {
+                this.spotifyProcess = null;
+                this.DisposeSpotifyLauncher();
+                this.DisposeSpotifyLauncherTimeoutTimer();
+                this.DisposeSpotifyWatcher();
+            }
+            catch { /* ignore */ }
+
             this.Exited?.Invoke(sender, e);
         }
 
         private void Spotify_Connected(object sender, SpotifyStateEventArgs e)
         {
+            Settings.Current.ActivateHotkeys();
             this.Connected?.Invoke(sender, e);
         }
 

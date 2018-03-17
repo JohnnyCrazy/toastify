@@ -9,6 +9,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Security.Principal;
 using System.Threading;
 using System.Windows;
 using System.Xml.Serialization;
@@ -80,7 +81,7 @@ namespace Toastify
         {
             try
             {
-                AppArgs = args!= null && args.Length > 0 ? Args.Parse<MainArgs>(args) : new MainArgs();
+                AppArgs = args != null && args.Length > 0 ? Args.Parse<MainArgs>(args) : new MainArgs();
             }
             catch (Exception e)
             {
@@ -250,7 +251,7 @@ namespace Toastify
                 }
             }
         }
-        
+
         [TabCompletion]
         internal class MainArgs
         {
@@ -310,6 +311,15 @@ namespace Toastify
         public App(string spotifyArgs)
         {
             SpotifyParameters = spotifyArgs.Trim();
+        }
+
+        public static bool IsRunningAsAdministrator()
+        {
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+            {
+                WindowsPrincipal principal = new WindowsPrincipal(identity);
+                return principal.IsInRole(WindowsBuiltInRole.Administrator);
+            }
         }
 
         private void Application_DispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
