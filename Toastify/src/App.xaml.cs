@@ -175,7 +175,7 @@ namespace Toastify
         {
             try
             {
-                Settings.Current.Load();
+                Settings.Current.Load(false);
 
                 if (logger.IsDebugEnabled)
                     logger.Debug("Settings loaded!");
@@ -222,7 +222,7 @@ namespace Toastify
                 else
                 {
                     logger.Warn("Neither a JSON config file nor an old XML settings file exist! Toastify will use default values.", ex);
-                    Settings.Current.LoadSafe();
+                    Settings.Current.LoadSafe(false);
                 }
             }
             catch (Exception ex)
@@ -233,7 +233,7 @@ namespace Toastify
                 MessageBox.Show(msg, "Toastify", MessageBoxButton.OK, MessageBoxImage.Information);
 
                 File.Copy(Settings.SettingsFilePath, $"{Settings.SettingsFilePath}.corrupted", true);
-                Settings.Current.LoadSafe();
+                Settings.Current.LoadSafe(false);
             }
         }
 
