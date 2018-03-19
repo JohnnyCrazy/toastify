@@ -155,6 +155,7 @@
       <DependentUpon>Resources.resx</DependentUpon>
     </Compile>
     <Compile Include="src\Events\SettingsSavedEventArgs.cs" />
+    <Compile Include="src\Helpers\Converters\MultiBooleanAndConverter.cs" />
     <Compile Include="src\Helpers\Converters\SettingValueToOppositeBoolValueConverter.cs" />
     <Compile Include="src\Common\ConstraintFailedException.cs" />
     <Compile Include="src\Common\EnumReadableNameAttribute.cs" />
